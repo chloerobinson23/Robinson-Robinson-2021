@@ -1,0 +1,354 @@
+# Chloe V. Robinson, Apr 16, 2021 [Based on scripts by Teresita M. Porter]
+
+library(vegan)  #package written for vegetation analysis
+library(MASS)   # 'MASS' to access function isoMDS()
+library(stats)    # e.g for hclust() function
+library(stringr) # str_split
+library(reshape2) # dcast
+library(vegan) # rrarefy
+library(ggplot2) # ggplot
+library (ggrepel) # geom_text_repel
+library(data.table) # setDT
+library(ggpubr) # normality
+library(extrafont) # get more fonts
+loadfonts(device = "win")
+loadfonts(device = "pdf")
+
+# Read in cat.csv
+A <- read.csv(file="bat_data_2020.csv", head=TRUE)
+
+# Read in metadata
+B <- read.csv(file="metadata3.csv", head=TRUE)
+
+# Create dataframes for vegan
+# Split up SampleName with pkg 'stringr'
+# Split up SampleName with pkg 'stringr'
+A.1<-data.frame(A, do.call(rbind, str_split(A$Survey_ID,"_")), stringsAsFactors = FALSE)
+names(A.1)[23:26] <- c("Site","Day","Month","Habitat")
+
+B.1<-data.frame(B, do.call(rbind, str_split(B$Survey_ID,"_")), stringsAsFactors = FALSE)
+names(B.1)[10:13] <- c("Site","Day","Month","Habitat")
+
+# pivot to make recordings matrix of survey by species using unique recording as value
+A.1.calls<-reshape2::dcast(A.1, Survey_ID ~ Species, value.var = "Recording_ID")
+
+# move sample to rownames then delete
+rownames(A.1.calls) <- A.1.calls$Survey_ID
+A.1.calls$Survey_ID <- NULL
+
+rownames(B.1) <- B.1$Survey_ID
+B.1$Survey_ID <- NULL
+
+#remove columns with only zeros
+calls.notnull<-A.1.calls[,colSums(A.1.calls) !=0]
+
+#remove rows with only zeros 
+calls.notnull2<-calls.notnull[rowSums(calls.notnull) !=0,]
+
+# Convert to df
+df<-data.frame(calls.notnull2, stringsAsFactors = FALSE)  
+
+# rename metadata df
+df.env <- B.1
+
+# remove trailing columns (Site, Day, Month, Habitat)
+df.envir <- df.env[,-c(9:12)]
+
+#Get sums
+df.envir$sums<-rowSums(df.envir)
+
+# test for normality (if not normal, will have to transform data)
+ggdensity(df.envir$sums, 
+          main = "Density plot",
+          xlab = "Recording richness")
+
+ggqqplot(df.envir$sums)
+# mostly normal
+
+#Shapiro-Wilk test of normality
+shapiro.test(df.envir$sums)
+# W = 0.96099, p-value = 0.1925
+# not sig diff than normal
+
+# Standardize (entries are transformed relative to other entries) response variables (rows = surveys, cols = bat species)
+comm.data<- decostand (df, method = "hellinger")
+comm.data
+
+#RDA Analysis (not terribly informative?)
+# redundancy analysis showing species x site matrix constrained by metrics
+# ensure number of explanatory variables (var n=7) is less than number of objects (samples n=39)
+
+#######################################################################
+# do simple RDA first
+simpleRDA <- rda(comm.data ~ ., df.envir)
+simpleRDA
+summary(simpleRDA)
+screeplot(simpleRDA) #bstick not available for constrained ordinations
+
+# canonical coefficients
+coef(simpleRDA)
+
+# unadjusted R^2 retreived from the rda result
+R2 <- RsquareAdj(simpleRDA)$r.squared
+R2 
+#R2 = 0.4277541
+
+# adjusted R^2
+R2adj <- RsquareAdj(simpleRDA)$adj.r.squared
+R2adj 
+# [1] 0.2751552 This model explains 27.5% of the variation
+
+#######################################################################
+# analyse linear dependencies among constraints
+# values over 10 indicate redundant constraints
+# VIF is a very useful indicator that there is multicollinearity in a data set
+# It is a poor indicator of which predictor should be dropped from a model.
+
+sort(vif.cca(rda(comm.data~Primary_vegetation + Secondary_vegetation + Temp + Wind_speed
+                 + Wind_direction + Cloud_cover + Humidity + Moon_luminosity, data = df.envir)))
+
+# all the explanatory variables have a VIF < 10
+# repeat RDA with these EV
+rda.vif <- rda(comm.data~Primary_vegetation + Secondary_vegetation + Temp + Wind_speed
+               + Wind_direction + Cloud_cover + Humidity + Moon_luminosity, data = df.envir)
+summary(rda.vif)
+screeplot(rda.vif) #bstick not available for constrained ordinations
+
+# canonical coefficients
+coef(rda.vif)
+
+# unadjusted R^2 retreived from the rda result
+R2 <- RsquareAdj(rda.vif)$r.squared
+R2 
+#0.4277541
+
+# adjusted R^2
+R2adj <- RsquareAdj(rda.vif)$adj.r.squared
+R2adj 
+#0.2751552 This model explains 27.5% of the variation (same as simple RDA)
+
+#######################################################################
+# Forward selection of model vars using ordistep 
+rda.ordi <- ordistep(rda(comm.data ~ ., df.envir), direction="forward", pstep=1000, R2scop=TRUE) #R2scope only accepts models with lower adjusted R2
+summary(rda.ordi)
+screeplot(rda.ordi) #bstick not available for constrained ordinations
+
+# canonical coefficients
+coef(rda.ordi)
+
+# unadjusted R^2 retreived from the rda result
+R2 <- RsquareAdj(rda.ordi)$r.squared
+R2 
+# 0.4277541
+
+# adjusted R^2 USE THIS
+R2adj <- RsquareAdj(rda.ordi)$adj.r.squared
+R2adj 
+# 0.2751552 This model explains 27.5% of the variation (same as simple RDA with all vars)
+
+# check for the heck of it
+vif.cca(rda.ordi)
+# small VIF indicates multicollinearity isn't a problem
+# try using the env vars that were significant from NMDS
+
+# check loadings
+load.rda <- scores(rda.ordi, choices=c(1:2), display="species")  # Species scores for the first 2 constrained axes
+#check RDA1, look at largest values, look for trends along gradient
+sort(load.rda[,1])
+
+load.rda2 <- scores(rda.ordi, choices=c(1:2), display="sites")  # Sites scores for the first 2 constrained axes
+sort(load.rda2[,1])
+
+#######################################################################
+# ordiR2step, Forward selection but model choice based on adjusted R2 & pval
+mod0 <- rda(comm.data ~ 1, df.envir)  # Model with intercept only
+mod1 <- rda(comm.data ~ ., df.envir)  # Model with all explanatory variables
+
+# choose forward selection
+step.res <- ordiR2step(mod0, scope = formula(mod1), perm.max = 200, direction="forward")
+step.res$anova  # Summary table
+
+summary(step.res)
+screeplot(step.res) #bstick not available for constrained ordinations
+
+# canonical coefficients
+coef(step.res)
+
+# unadjusted R^2 retreived from the rda result
+R2 <- RsquareAdj(step.res)$r.squared
+R2 
+# 0.2614548 don't use this
+
+# adjusted R^2 USE THIS
+R2adj <- RsquareAdj(step.res)$adj.r.squared
+R2adj 
+# [1] 0.2204246 This model explains 22% of the variation (not as good as rda.ordi or simpleRDA)
+
+#######################################################################
+rda.nmds <- rda(comm.data ~ Primary_vegetation + Secondary_vegetation + Temp + Wind_speed
+                + Wind_direction + Cloud_cover + Humidity + Moon_luminosity, data = df.envir)
+summary(rda.nmds)
+screeplot(rda.nmds) #bstick not available for constrained ordinations
+
+# canonical coefficients
+coef(rda.nmds)
+
+# unadjusted R^2 retreived from the rda result
+R2 <- RsquareAdj(rda.nmds)$r.squared
+R2 
+# 0.4277541 don't use this
+
+# adjusted R^2 USE THIS
+R2adj <- RsquareAdj(rda.nmds)$adj.r.squared
+R2adj 
+# [1] 0.2751552 This model explains 27.5% of the variation (same as simple RDA, rda.vif)
+
+#######################################################################
+# just use rda.ordi with the significant vars
+
+# do  RDA first
+rda.ordi.sig <- rda(comm.data ~ Primary_vegetation + Secondary_vegetation + Temp + Wind_speed
+                    + Wind_direction + Cloud_cover + Humidity + Moon_luminosity, data = df.envir)
+
+summary(rda.ordi.sig)
+screeplot(rda.ordi.sig) #bstick not available for constrained ordinations
+
+# canonical coefficients
+coef(rda.ordi.sig)
+
+# unadjusted R^2 retreived from the rda result
+R2 <- RsquareAdj(rda.ordi.sig)$r.squared
+R2 
+#0.4277541
+
+# adjusted R^2
+R2adj <- RsquareAdj(rda.ordi.sig)$adj.r.squared
+R2adj 
+# 0.2751552 This model explains 27.5% of the variation (same as previous apart from step.res)
+
+
+#######################################################################
+# Continue with rda.ordi (could have also picked simpleRDA)
+# comparing variation explained using a constrained analysis with variation explained in an unconstrained analysis
+constrained_eig <- rda.ordi$CCA$eig/rda.ordi$tot.chi*100
+unconstrained_eig <- rda.ordi$CA$eig/rda.ordi$tot.chi*100
+expl_var <- c(constrained_eig, unconstrained_eig)
+barplot (expl_var[1:7], col = c(rep ('red', length (constrained_eig)), rep ('black', length (unconstrained_eig))),
+         las = 2, ylab = '% variation')
+# variation explained in first 2 constrained axes is greater than for unconstrained axes
+
+# get variance explained by each axis
+summary(eigenvals(rda.ordi))
+# that's where I get Porportion explained RDA1-19.0, RDA2-13.1, cumulative prop 32.3(RDA1+RDA2)
+# remember that the model (all axes) explaints ~ 27.5% of the variation (R2adj)
+#  the goal typically is not to explain the variance though, but to find the “gradients” or main trends in the data. 
+
+#goodness(rda.ordi, display="species", model="CCA", summarize=TRUE)
+
+#varpart(comm.data, ~ ., ~ data=df.envir, transfo="hel")
+
+# Permutation Tests of RDA Results
+# Test of RDA result
+anova.cca(rda.ordi, step=1000)
+# Df Variance      F Pr(>F)    
+#Model     8  0.13398 2.8031  0.001 ***
+#Residual 30  0.17924    
+# RDA is significant and worth interpreting
+
+# Test of all canonical axes
+anova.cca(rda.ordi, by='axis', step=1000)
+# Df Variance      F Pr(>F)    
+#RDA1      1 0.059763 10.3363  0.001 ***
+#RDA2      1 0.041083  7.1054  0.008 ** 
+# Residual 31 0.179239   
+# top 2 axes are significant (should go ahead and look at loadings next)
+
+# check significance of each explanatory variable
+vars <- anova.cca(rda.ordi, by = "term", permutations = 999)
+vars.df <- as.data.frame(vars)
+# drop last row (residual)
+vars.df <- vars.df[-length(rownames(vars.df)),]
+vars.sig <- vars.df[vars.df$`Pr(>F)`<0.05,]
+sigvars <- rownames(vars.sig)
+#	                  Df Variance       F      Pr(>F)
+#Primary_vegetation 1	0.04839317	8.099779	0.001
+#Secondary_vegetation	1	0.03349971	5.606995	0.001                 
+
+# Now lets plot it
+# Create new df with the same rownames as comm.data
+comm.data.2 <- comm.data[,-c(1:7)]
+
+# Split first column into their own fields
+names.1<-data.frame(comm.data.2, do.call(rbind, strsplit(rownames(comm.data.2),'_')), stringsAsFactors = FALSE)
+names(names.1)[1:4]<-c("Site","Day","Month","Habitat")
+
+# Grab sites/species scores from RDA output
+sites <- data.frame(scores(rda.ordi, display = "sites"))
+species <- data.frame(scores(rda.ordi, display = "species"))
+species$x <- 0
+species$y <- 0
+
+# Grab sites/species scores from RDA output
+biplot <- as.data.frame(rda.ordi$CCA$biplot)[,1:2]
+biplot$x <- 0
+biplot$y <- 0
+# only keep the significant ones
+biplot.sig <- biplot[rownames(biplot) %in% sigvars,]
+
+# Put it all in one df for ggplot
+gg.sites <- merge(sites, names.1, by="row.names")
+
+gg.sites$Site <- factor(gg.sites$Site,
+                        levels = c("MEC","HAN", "RSP", "ERT"),
+                        labels = c("Mitchell-Ellis Creek Park","Hanlon Creek Park","Riverside Park","Eramosa River Trail"))
+gg.sites$Month <- factor(gg.sites$Month,
+                         levels = c("Jul","Aug", "Sep"),
+                         labels = c("July","August","September"))
+gg.sites$Habitat <- factor(gg.sites$Habitat,
+                           levels = c("River","Forest"),
+                           labels = c("Riverine","Forested"))
+
+
+# Redundancy analysis showing sites x species constrained by explanatory variables
+# This model explains 27.5% of the variation using anova.cca (pval 0.001)
+site_plot <- ggplot(gg.sites, aes(RDA1, RDA2)) +
+  labs(x="RDA1 (19.0%)", y="RDA2 (13.1%)") +
+  geom_point(gg.sites, mapping=aes(color=Site)) +
+  geom_segment(species, 
+               mapping=aes(x=x,y=y,xend=RDA1, yend=RDA2), 
+               arrow=arrow(angle=25, length=unit(0.10, "inches")), 
+               size=0.5,
+               color="black") +
+  geom_text(species,
+            mapping=aes(x=RDA1*1.05, y=RDA2*1.05, label=rownames(species)),
+            hjust="outward", vjust="outward", size=3, color="black") +
+  geom_segment(biplot.sig, 
+               mapping=aes(x=x,y=y, xend=RDA1, yend=RDA2), 
+               size=0.5, linetype = "dashed") +
+  geom_text(biplot.sig,
+            mapping=aes(x=RDA1*1.05, y=RDA2*1.05, label=rownames(biplot.sig)),
+            hjust="outward", vjust="outward", size=5) +
+  expand_limits(x = c(-1.3, 1.5)) +
+  theme_bw() +
+  theme(
+    text = element_text(family = "Arial"),
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=16),
+    axis.text = element_text(size=16),
+    legend.title = element_text(size=16),
+    legend.text = element_text(size=16),
+    legend.position = "bottom") +
+  guides(color=guide_legend(ncol=2))+
+  scale_colour_grey(start = 0.1, end = .8)+
+  scale_fill_grey(start = 0.1, end = .8)
+
+site_plot
+
+ggsave("Fig4_Site_RDA.tiff", site_plot, width = 10, height = 8, dpi = 800)
+
