@@ -1,1 +1,109 @@
+# Chloe V Robinson, Apr 16, 2021 
 
+library(reshape2) # dcast
+library(ggplot2) # ggplot
+library(data.table) # setDT
+library(gridExtra) # grid.arrange
+library(cowplot) # get_legend
+library(extrafont) # get more fonts
+loadfonts(device = "win")
+loadfonts(device = "pdf")
+
+# Read in cat.csv
+A <- read.csv(file="bat_data_2020.csv", head=TRUE)
+
+# pivot to make recordings matrix of survey by species using unique recording as value
+A.1.calls<-reshape2::dcast(A, Site ~ Species, value.var = "Recording_ID")
+
+# move sample to rownames then delete
+rownames(A.1.calls) <- A.1.calls$Site
+A.1.calls$Site <- NULL
+
+#remove columns with only zeros
+calls.notnull<-A.1.calls[,colSums(A.1.calls) !=0]
+
+#remove rows with only zeros 
+calls.notnull2<-calls.notnull[rowSums(calls.notnull) !=0,]
+
+# Convert to df
+df<-data.frame(calls.notnull2, stringsAsFactors = FALSE)   
+
+# Get total recordings per survey
+df$sums<-rowSums(df)
+
+# Move rownames to first column
+df2<-data.frame(df, stringsAsFactors = FALSE)
+setDT(df2, keep.rownames = TRUE)[]
+
+#Rename rn 
+names(df2)[names(df2) == "rn"] <- "Site"
+df2
+
+# create factors
+df2$Site <- factor(df2$Site,
+                   levels = c("MEC","HAN", "RSP", "ERT"),
+                   labels = c("Mitchell-Ellis Creek Park","Hanlon Creek Park","Riverside Park","Eramosa River Trail"))
+
+
+# remove unneeded columns
+df3 <- df2[,-c(9)]
+
+
+# melt for ggplot
+df4 <- melt(df3, id=c("Site"))
+
+
+# create factor
+df4$variable <- factor(df4$variable,
+                              levels=rev(unique(df4$variable)))
+
+
+# Compare richness by site
+plot.tmp <- ggplot(df4) +
+  geom_tile(aes(x=Site, y=variable, fill = value)) +
+  ggtitle(element_blank())+
+  labs(x="Sites", y="Species") +
+  theme(legend.title=element_blank()) +
+  scale_fill_gradientn(colours = c("white", "grey", "black"), values = c(0,0.1,1))+
+  theme_bw() + 
+  guides(fill=guide_legend(title="No. Recordings")) +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(angle = 90, hjust = 1.0,vjust = 0, size=7),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        legend.position = "bottom",
+        legend.title = element_text(size=14),
+        legend.text = element_text(size=14))
+
+l <- get_legend(plot.tmp)
+
+heatmap <- ggplot(df4) +
+    geom_tile(aes(x=Site, y=variable, fill= value)) +
+  ggtitle(element_blank())+
+  labs(x="Sites", y="Species") +
+  theme(legend.title=element_blank()) +
+  scale_fill_gradientn(colours = c("white", "grey", "black"), values = c(0,0.1,1))+
+  theme_bw() + 
+  guides(fill=guide_legend(title="No. Recordings")) +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        text = element_text(family = "Arial"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size=16, angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size=16),
+        axis.title.x = element_text(size=20, vjust = -15),
+        axis.title.y = element_text(size=20),
+        legend.position = "none",
+        strip.text.x = element_text(size = 18),
+        strip.text.y = element_text(size = 18))
+heatmap
+
+g <- plot_grid(l,heatmap,nrow = 2, rel_heights = c(0.1, 1))
+g
+
+ggsave("Fig2_species_heatmap.tiff", g, width = 10, height = 12, dpi = 800)
